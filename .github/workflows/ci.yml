@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  actions: read
+  contents: read
+  deployments: write # Added for deployment
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          filter: tree:0
+          fetch-depth: 0
+
+      # Cache node_modules
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+      - uses: nrwl/nx-set-shas@v4
+
+      - run: npx nx run-many --target=lint --projects=ui,backend
+      - run: npx nx run-many --target=test --projects=ui,backend
+      - run: npx nx run-many --target=build --projects=ui,backend
+
+      # Store build artifacts for deployment jobs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-build
+          path: dist/apps/ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-build
+          path: dist/apps/backend
+
+  deploy-ui:
+    needs: main
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' # Deploy only on push to main
+    environment: production
+    name: Deploy UI to Cloudflare Pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-build
+          path: dist/apps/ui
+      - name: Publish to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: onepercentr-ui
+          directory: dist/apps/ui
+          # Optional: Specify a branch for preview deployments
+          # branch: ${{ github.head_ref || github.ref_name }}
+
+  deploy-backend:
+    needs: main
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' # Deploy only on push to main
+    environment: production
+    name: Deploy Backend to Cloudflare Workers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-build
+          path: dist/apps/backend
+      - name: Publish to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The command assumes your worker project is at the root of the artifact
+          # and wrangler.toml is configured correctly within the backend app.
+          # We need to tell wrangler where the `wrangler.toml` is and where the output is.
+          # The `wrangler-action` can deploy from a specific directory.
+          name: onepercentr-backend
+          workingDirectory: apps/backend
